@@ -460,6 +460,9 @@ jobs:
       - name: Get stack outputs
         id: get-outputs
         run: |
+          # Wait a moment to ensure CloudFormation outputs are available
+          sleep 5
+          
           REPO_URL=$(aws cloudformation describe-stacks \
             --stack-name codevigil \
             --query "Stacks[0].Outputs[?ExportName=='codevigil-repository-url'].OutputValue" \
@@ -480,15 +483,30 @@ jobs:
             --query "Stacks[0].Outputs[?ExportName=='codevigil-alb-dns'].OutputValue" \
             --output text)
           
+          # Debug output
+          echo "===== Debug Info ====="
           echo "ECR Repository URL: $REPO_URL"
           echo "ECS Cluster: $CLUSTER_NAME"
           echo "ECS Service: $SERVICE_NAME"
           echo "Application Load Balancer URL: $LB_URL"
+          echo "======================"
           
-          echo "ecr_repo_url=${REPO_URL}" >> $GITHUB_OUTPUT
-          echo "cluster_name=${CLUSTER_NAME}" >> $GITHUB_OUTPUT
-          echo "service_name=${SERVICE_NAME}" >> $GITHUB_OUTPUT
-          echo "lb_url=${LB_URL}" >> $GITHUB_OUTPUT
+          # Ensure we have a repo URL before continuing
+          if [ -z "$REPO_URL" ]; then
+            echo "ERROR: ECR Repository URL not found in CloudFormation outputs"
+            exit 1
+          fi
+          
+          # Write to GITHUB_OUTPUT using the correct syntax
+          {
+            echo "ecr_repo_url=$REPO_URL"
+            echo "cluster_name=$CLUSTER_NAME"
+            echo "service_name=$SERVICE_NAME" 
+            echo "lb_url=$LB_URL"
+          } >> "$GITHUB_OUTPUT"
+          
+          # Also set environment variables for this job
+          echo "ECR_REPO_URL=$REPO_URL" >> $GITHUB_ENV
     
     outputs:
       ecr_repo_url: ${{ steps.get-outputs.outputs.ecr_repo_url }}
@@ -510,6 +528,26 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Get ECR repository URL
+        id: get-ecr-url
+        run: |
+          # Debug the ECR repository URL passed from previous job
+          echo "ECR URL from output: ${{ needs.deploy-infrastructure.outputs.ecr_repo_url }}"
+          
+          # Fallback: If the output is not set correctly, get it directly
+          if [ -z "${{ needs.deploy-infrastructure.outputs.ecr_repo_url }}" ]; then
+            echo "Retrieving ECR URL directly from CloudFormation"
+            ECR_URL=$(aws cloudformation describe-stacks \
+              --stack-name codevigil \
+              --query "Stacks[0].Outputs[?ExportName=='codevigil-repository-url'].OutputValue" \
+              --output text)
+            echo "Retrieved ECR URL: $ECR_URL"
+            echo "ecr_url=$ECR_URL" >> $GITHUB_OUTPUT
+          else
+            echo "Using ECR URL from previous job"
+            echo "ecr_url=${{ needs.deploy-infrastructure.outputs.ecr_repo_url }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
@@ -523,26 +561,80 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64
-          tags: ${{ needs.deploy-infrastructure.outputs.ecr_repo_url }}:latest,${{ needs.deploy-infrastructure.outputs.ecr_repo_url }}:${{ github.sha }}
+          tags: |
+            ${{ steps.get-ecr-url.outputs.ecr_url }}:latest
+            ${{ steps.get-ecr-url.outputs.ecr_url }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Update ECS service
         run: |
+          # Get service info
+          SERVICE_NAME="${{ needs.deploy-infrastructure.outputs.service_name }}"
+          CLUSTER_NAME="${{ needs.deploy-infrastructure.outputs.cluster_name }}"
+          
+          # Fallback if outputs not set correctly
+          if [ -z "$SERVICE_NAME" ] || [ -z "$CLUSTER_NAME" ]; then
+            echo "Retrieving cluster and service names directly from CloudFormation"
+            CLUSTER_NAME=$(aws cloudformation describe-stacks \
+              --stack-name codevigil \
+              --query "Stacks[0].Outputs[?ExportName=='codevigil-cluster-name'].OutputValue" \
+              --output text)
+            
+            SERVICE_NAME=$(aws cloudformation describe-stacks \
+              --stack-name codevigil \
+              --query "Stacks[0].Outputs[?ExportName=='codevigil-service-name'].OutputValue" \
+              --output text)
+          fi
+          
+          echo "Updating ECS service: $SERVICE_NAME in cluster: $CLUSTER_NAME"
+          
           aws ecs update-service \
-            --cluster ${{ needs.deploy-infrastructure.outputs.cluster_name }} \
-            --service ${{ needs.deploy-infrastructure.outputs.service_name }} \
+            --cluster "$CLUSTER_NAME" \
+            --service "$SERVICE_NAME" \
             --force-new-deployment
 
       - name: Wait for service to stabilize
         run: |
+          # Get cluster and service name
+          SERVICE_NAME="${{ needs.deploy-infrastructure.outputs.service_name }}"
+          CLUSTER_NAME="${{ needs.deploy-infrastructure.outputs.cluster_name }}"
+          
+          # Fallback if outputs not set correctly
+          if [ -z "$SERVICE_NAME" ] || [ -z "$CLUSTER_NAME" ]; then
+            echo "Retrieving cluster and service names directly from CloudFormation"
+            CLUSTER_NAME=$(aws cloudformation describe-stacks \
+              --stack-name codevigil \
+              --query "Stacks[0].Outputs[?ExportName=='codevigil-cluster-name'].OutputValue" \
+              --output text)
+            
+            SERVICE_NAME=$(aws cloudformation describe-stacks \
+              --stack-name codevigil \
+              --query "Stacks[0].Outputs[?ExportName=='codevigil-service-name'].OutputValue" \
+              --output text)
+          fi
+          
+          echo "Waiting for service to stabilize: $SERVICE_NAME in cluster: $CLUSTER_NAME"
+          
           aws ecs wait services-stable \
-            --cluster ${{ needs.deploy-infrastructure.outputs.cluster_name }} \
-            --services ${{ needs.deploy-infrastructure.outputs.service_name }}
+            --cluster "$CLUSTER_NAME" \
+            --services "$SERVICE_NAME"
 
       - name: Verify deployment
         run: |
-          echo "Application deployed to: http://${{ needs.deploy-infrastructure.outputs.lb_url }}"
+          # Get LB URL
+          LB_URL="${{ needs.deploy-infrastructure.outputs.lb_url }}"
+          
+          # Fallback if output not set correctly
+          if [ -z "$LB_URL" ]; then
+            echo "Retrieving load balancer URL directly from CloudFormation"
+            LB_URL=$(aws cloudformation describe-stacks \
+              --stack-name codevigil \
+              --query "Stacks[0].Outputs[?ExportName=='codevigil-alb-dns'].OutputValue" \
+              --output text)
+          fi
+          
+          echo "Application deployed to: http://$LB_URL"
           
           # Add retries since the service might take a moment to become healthy
           MAX_RETRIES=5
@@ -550,7 +642,7 @@ jobs:
           SUCCESS=false
           
           while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" != "true" ]; do
-            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://${{ needs.deploy-infrastructure.outputs.lb_url }}/api/repositories")
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://$LB_URL/api/repositories")
             
             if [ "$HTTP_STATUS" == "200" ]; then
               SUCCESS=true

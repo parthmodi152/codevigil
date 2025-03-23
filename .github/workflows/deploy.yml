@@ -442,7 +442,7 @@ jobs:
             --template-file cloudformation/codevigil-infra.yml \
             --parameter-overrides \
               DBPassword=${{ secrets.DB_PASSWORD }} \
-              GitHubToken=${{ secrets.GITHUB_TOKEN }} \
+              GitHubToken=${{ secrets.GH_TOKEN }} \
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 

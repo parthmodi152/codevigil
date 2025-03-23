@@ -56,7 +56,7 @@ echo ""
 echo -e "${YELLOW}Please enter additional required information:${NC}"
 read -sp "PostgreSQL database password: " DB_PASSWORD
 echo ""
-read -sp "GitHub Personal Access Token: " GITHUB_TOKEN
+read -sp "GitHub Personal Access Token: " GH_TOKEN
 echo ""
 
 # Set up the secrets
@@ -80,7 +80,7 @@ set_secret() {
 set_secret "AWS_ACCESS_KEY_ID" "$AWS_ACCESS_KEY_ID"
 set_secret "AWS_SECRET_ACCESS_KEY" "$AWS_SECRET_ACCESS_KEY"
 set_secret "DB_PASSWORD" "$DB_PASSWORD"
-set_secret "GITHUB_TOKEN" "$GITHUB_TOKEN"
+set_secret "GH_TOKEN" "$GH_TOKEN"
 
 echo ""
 echo -e "${GREEN}Setup complete!${NC}"

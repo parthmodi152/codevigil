@@ -13,7 +13,6 @@ RUN apt-get update && \
 # Copy project files
 COPY project.clj /app/
 COPY src /app/src/
-COPY resources /app/resources/
 
 # Download dependencies
 RUN lein deps

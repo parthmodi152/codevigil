@@ -23,7 +23,11 @@
      
      ["/api"
       ["/repositories"
-       {:post {:summary "Register a GitHub repository for analysis"
+       {:get {:summary "Get a list of all repositories"
+              :responses {200 {:description "Repositories retrieved successfully"}
+                          500 {:description "Server error"}}
+              :handler routes/get-repositories-handler}
+        :post {:summary "Register a GitHub repository for analysis"
                :parameters {:body {:repo_url string?}}
                :responses {200 {:description "Repository registered successfully"}
                            400 {:description "Invalid repository URL"}

@@ -108,3 +108,28 @@
         (log/warn "Repository not found:" owner "/" repo)
         (resp/not-found {:status "error"
                         :message (str "Repository " owner "/" repo " not found.")})))))
+
+(defn get-repositories-handler
+  "Handler for GET /api/repositories endpoint.
+   Returns a list of all repositories in the database."
+  [_]
+  (try
+    (let [repositories (db/get-all-repositories)
+          ;; Transform the data for the response
+          formatted-repos (map (fn [repo]
+                                {:id (:repositories/id repo)
+                                 :owner (:repositories/owner repo)
+                                 :name (:repositories/repo_name repo)
+                                 :url (:repositories/repo_url repo)
+                                 :created_at (:repositories/created_at repo)
+                                 :last_checked_at (:repositories/last_checked_at repo)})
+                              repositories)]
+      (resp/response {:status "success"
+                     :repositories formatted-repos}))
+    
+    (catch Exception e
+      (log/error "Exception in get-repositories-handler:" (.getMessage e) e)
+      (println "Error getting repositories:" (.getMessage e))
+      (resp/status (resp/response {:status "error" 
+                                  :message (.getMessage e)}) 
+                  500))))

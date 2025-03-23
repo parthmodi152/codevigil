@@ -264,7 +264,7 @@ jobs:
                       Action: sts:AssumeRole
                 ManagedPolicyArns:
                   - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
-                  - arn:aws:iam::aws:policy/AmazonECR-FullAccess
+                  - arn:aws:iam::aws:policy/AmazonECR-ReadOnly
                 Policies:
                   - PolicyName: SecretsAccess
                     PolicyDocument:
@@ -276,6 +276,17 @@ jobs:
                           Resource:
                             - !Ref DatabaseSecret
                             - !Ref GitHubTokenSecret
+                  - PolicyName: ECRAccess
+                    PolicyDocument:
+                      Version: '2012-10-17'
+                      Statement:
+                        - Effect: Allow
+                          Action:
+                            - ecr:GetAuthorizationToken
+                            - ecr:BatchCheckLayerAvailability
+                            - ecr:GetDownloadUrlForLayer
+                            - ecr:BatchGetImage
+                          Resource: "*"
 
             # CloudWatch Log Group
             LogGroup:

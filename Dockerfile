@@ -1,4 +1,4 @@
-FROM clojure:openjdk-17-tools-deps-slim-buster
+FROM --platform=linux/amd64 clojure:openjdk-17-tools-deps-slim-buster
 
 WORKDIR /app
 

@@ -58,6 +58,35 @@ Response:
 }
 ```
 
+### Get Repositories
+
+Retrieve a list of all registered repositories.
+
+```
+GET /api/repositories
+```
+
+Response:
+```json
+{
+  "status": "success",
+  "repositories": [
+    {
+      "owner": "owner1",
+      "repo": "repo1",
+      "url": "https://github.com/owner1/repo1",
+      "last_checked_at": "2025-03-24T14:32:10Z"
+    },
+    {
+      "owner": "owner2",
+      "repo": "repo2",
+      "url": "https://github.com/owner2/repo2",
+      "last_checked_at": "2025-03-23T09:15:43Z"
+    }
+  ]
+}
+```
+
 ### Get Aggregated Metrics
 
 Retrieve aggregated metrics for a repository over time (weekly or daily).

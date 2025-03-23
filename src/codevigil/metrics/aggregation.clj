@@ -10,7 +10,7 @@
    Returns nil if the collection is empty."
   [coll]
   (when (seq coll)
-    (let [sorted (sort coll)
+    (let [sorted (sort (map #(if (number? %) % (double %)) coll))
           cnt (count sorted)
           half (quot cnt 2)]
       (if (odd? cnt)
@@ -20,11 +20,12 @@
 (defn- format-duration-seconds
   "Format duration in seconds to a human-readable string."
   [seconds]
-  (when seconds
-    (let [days (quot seconds 86400)
-          hours (quot (rem seconds 86400) 3600)
-          minutes (quot (rem seconds 3600) 60)
-          remaining-seconds (rem seconds 60)]
+  (when (and seconds (number? seconds))
+    (let [seconds-long (long seconds)
+          days (quot seconds-long 86400)
+          hours (quot (rem seconds-long 86400) 3600)
+          minutes (quot (rem seconds-long 3600) 60)
+          remaining-seconds (rem seconds-long 60)]
       (cond
         (pos? days) (format "%d days, %d hours" days hours)
         (pos? hours) (format "%d hours, %d minutes" hours minutes)
@@ -63,7 +64,19 @@
         ;; Count PRs
         total-prs (count metrics)
         merged-prs (count merge-times)
-        reviewed-prs (count review-times)]
+        reviewed-prs (count review-times)
+        
+        ;; Ensure values are numbers or nil
+        median-merge-time-safe (when median-merge-time 
+                                (if (number? median-merge-time) 
+                                  median-merge-time 
+                                  (try (double median-merge-time) 
+                                       (catch Exception _ nil))))
+        median-review-time-safe (when median-review-time 
+                                (if (number? median-review-time) 
+                                  median-review-time
+                                  (try (double median-review-time) 
+                                       (catch Exception _ nil))))]
     
     {:period period-name
      :start_date (str start-date)
@@ -71,10 +84,10 @@
      :total_prs total-prs
      :merged_prs merged-prs
      :reviewed_prs reviewed-prs
-     :median_merge_time_seconds median-merge-time
-     :median_merge_time (format-duration-seconds median-merge-time)
-     :median_review_turnaround_seconds median-review-time
-     :median_review_turnaround (format-duration-seconds median-review-time)}))
+     :median_merge_time_seconds median-merge-time-safe
+     :median_merge_time (format-duration-seconds median-merge-time-safe)
+     :median_review_turnaround_seconds median-review-time-safe
+     :median_review_turnaround (format-duration-seconds median-review-time-safe)}))
 
 (defn get-daily-metrics
   "Get daily metrics for the last 5 days.

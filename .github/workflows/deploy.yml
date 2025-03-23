@@ -1,0 +1,557 @@
+name: Deploy CodeVigil
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-2
+
+jobs:
+  deploy-infrastructure:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy CloudFormation stack
+        run: |
+          # First create the CloudFormation template directory if it doesn't exist
+          mkdir -p cloudformation
+          
+          # Store the CloudFormation template
+          cat > cloudformation/codevigil-infra.yml << 'EOF'
+          AWSTemplateFormatVersion: '2010-09-09'
+          Description: 'CodeVigil Application Infrastructure'
+
+          Parameters:
+            DBPassword:
+              Type: String
+              NoEcho: true
+              Description: Database password
+
+            GitHubToken:
+              Type: String
+              NoEcho: true
+              Description: GitHub token for API access
+
+          Resources:
+            # VPC and Networking
+            VPC:
+              Type: AWS::EC2::VPC
+              Properties:
+                CidrBlock: 10.0.0.0/16
+                EnableDnsSupport: true
+                EnableDnsHostnames: true
+                Tags:
+                  - Key: Name
+                    Value: codevigil-vpc
+
+            PublicSubnet1:
+              Type: AWS::EC2::Subnet
+              Properties:
+                VpcId: !Ref VPC
+                AvailabilityZone: !Select [0, !GetAZs '']
+                CidrBlock: 10.0.1.0/24
+                MapPublicIpOnLaunch: true
+                Tags:
+                  - Key: Name
+                    Value: codevigil-public-subnet-1
+
+            PublicSubnet2:
+              Type: AWS::EC2::Subnet
+              Properties:
+                VpcId: !Ref VPC
+                AvailabilityZone: !Select [1, !GetAZs '']
+                CidrBlock: 10.0.2.0/24
+                MapPublicIpOnLaunch: true
+                Tags:
+                  - Key: Name
+                    Value: codevigil-public-subnet-2
+
+            InternetGateway:
+              Type: AWS::EC2::InternetGateway
+              Properties:
+                Tags:
+                  - Key: Name
+                    Value: codevigil-igw
+
+            VPCGatewayAttachment:
+              Type: AWS::EC2::VPCGatewayAttachment
+              Properties:
+                VpcId: !Ref VPC
+                InternetGatewayId: !Ref InternetGateway
+
+            PublicRouteTable:
+              Type: AWS::EC2::RouteTable
+              Properties:
+                VpcId: !Ref VPC
+                Tags:
+                  - Key: Name
+                    Value: codevigil-public-rt
+
+            PublicRoute:
+              Type: AWS::EC2::Route
+              DependsOn: VPCGatewayAttachment
+              Properties:
+                RouteTableId: !Ref PublicRouteTable
+                DestinationCidrBlock: 0.0.0.0/0
+                GatewayId: !Ref InternetGateway
+
+            PublicSubnet1RouteTableAssociation:
+              Type: AWS::EC2::SubnetRouteTableAssociation
+              Properties:
+                SubnetId: !Ref PublicSubnet1
+                RouteTableId: !Ref PublicRouteTable
+
+            PublicSubnet2RouteTableAssociation:
+              Type: AWS::EC2::SubnetRouteTableAssociation
+              Properties:
+                SubnetId: !Ref PublicSubnet2
+                RouteTableId: !Ref PublicRouteTable
+
+            # Security Groups
+            ApplicationSecurityGroup:
+              Type: AWS::EC2::SecurityGroup
+              Properties:
+                GroupDescription: Security group for the CodeVigil application
+                VpcId: !Ref VPC
+                SecurityGroupIngress:
+                  - IpProtocol: tcp
+                    FromPort: 3000
+                    ToPort: 3000
+                    CidrIp: 0.0.0.0/0
+                Tags:
+                  - Key: Name
+                    Value: codevigil-app-sg
+
+            DatabaseSecurityGroup:
+              Type: AWS::EC2::SecurityGroup
+              Properties:
+                GroupDescription: Security group for the PostgreSQL database
+                VpcId: !Ref VPC
+                SecurityGroupIngress:
+                  - IpProtocol: tcp
+                    FromPort: 5432
+                    ToPort: 5432
+                    SourceSecurityGroupId: !Ref ApplicationSecurityGroup
+                Tags:
+                  - Key: Name
+                    Value: codevigil-db-sg
+
+            LoadBalancerSecurityGroup:
+              Type: AWS::EC2::SecurityGroup
+              Properties:
+                GroupDescription: Security group for the Application Load Balancer
+                VpcId: !Ref VPC
+                SecurityGroupIngress:
+                  - IpProtocol: tcp
+                    FromPort: 80
+                    ToPort: 80
+                    CidrIp: 0.0.0.0/0
+                Tags:
+                  - Key: Name
+                    Value: codevigil-alb-sg
+
+            # Add ingress rule for application security group to accept traffic from load balancer
+            ApplicationSecurityGroupIngress:
+              Type: AWS::EC2::SecurityGroupIngress
+              Properties:
+                GroupId: !Ref ApplicationSecurityGroup
+                IpProtocol: tcp
+                FromPort: 3000
+                ToPort: 3000
+                SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+
+            # RDS Database
+            DatabaseSubnetGroup:
+              Type: AWS::RDS::DBSubnetGroup
+              Properties:
+                DBSubnetGroupDescription: Subnet group for RDS database
+                SubnetIds:
+                  - !Ref PublicSubnet1
+                  - !Ref PublicSubnet2
+                Tags:
+                  - Key: Name
+                    Value: codevigil-db-subnet-group
+
+            Database:
+              Type: AWS::RDS::DBInstance
+              Properties:
+                Engine: postgres
+                EngineVersion: '14.3'
+                DBInstanceClass: db.t3.micro
+                AllocatedStorage: 20
+                StorageType: gp2
+                DBName: codevigil
+                MasterUsername: postgres
+                MasterUserPassword: !Ref DBPassword
+                DBSubnetGroupName: !Ref DatabaseSubnetGroup
+                VPCSecurityGroups:
+                  - !Ref DatabaseSecurityGroup
+                PubliclyAccessible: false
+                BackupRetentionPeriod: 7
+                MultiAZ: false
+                Tags:
+                  - Key: Name
+                    Value: codevigil-db
+              DeletionPolicy: Snapshot
+
+            # Secrets Manager for Database Credentials and GitHub Token
+            DatabaseSecret:
+              Type: AWS::SecretsManager::Secret
+              Properties:
+                Name: codevigil/db-password
+                Description: Database password for CodeVigil application
+                SecretString: !Ref DBPassword
+
+            GitHubTokenSecret:
+              Type: AWS::SecretsManager::Secret
+              Properties:
+                Name: codevigil/github-token
+                Description: GitHub token for CodeVigil application
+                SecretString: !Ref GitHubToken
+
+            # ECR Repository
+            ECRRepository:
+              Type: AWS::ECR::Repository
+              Properties:
+                RepositoryName: codevigil
+                LifecyclePolicy:
+                  LifecyclePolicyText: |
+                    {
+                      "rules": [
+                        {
+                          "rulePriority": 1,
+                          "description": "Keep only the 10 most recent images",
+                          "selection": {
+                            "tagStatus": "any",
+                            "countType": "imageCountMoreThan",
+                            "countNumber": 10
+                          },
+                          "action": {
+                            "type": "expire"
+                          }
+                        }
+                      ]
+                    }
+
+            # ECS Cluster, Task Definition, and Service
+            ECSCluster:
+              Type: AWS::ECS::Cluster
+              Properties:
+                ClusterName: codevigil-cluster
+
+            # ECS Task Execution Role
+            ECSTaskExecutionRole:
+              Type: AWS::IAM::Role
+              Properties:
+                AssumeRolePolicyDocument:
+                  Version: '2012-10-17'
+                  Statement:
+                    - Effect: Allow
+                      Principal:
+                        Service: ecs-tasks.amazonaws.com
+                      Action: sts:AssumeRole
+                ManagedPolicyArns:
+                  - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+                  - arn:aws:iam::aws:policy/AmazonECR-FullAccess
+                Policies:
+                  - PolicyName: SecretsAccess
+                    PolicyDocument:
+                      Version: '2012-10-17'
+                      Statement:
+                        - Effect: Allow
+                          Action:
+                            - secretsmanager:GetSecretValue
+                          Resource:
+                            - !Ref DatabaseSecret
+                            - !Ref GitHubTokenSecret
+
+            # CloudWatch Log Group
+            LogGroup:
+              Type: AWS::Logs::LogGroup
+              Properties:
+                LogGroupName: /ecs/codevigil
+                RetentionInDays: 30
+
+            # ECS Task Definition
+            TaskDefinition:
+              Type: AWS::ECS::TaskDefinition
+              Properties:
+                Family: codevigil-task
+                Cpu: '256'
+                Memory: '512'
+                NetworkMode: awsvpc
+                RequiresCompatibilities:
+                  - FARGATE
+                ExecutionRoleArn: !Ref ECSTaskExecutionRole
+                ContainerDefinitions:
+                  - Name: codevigil
+                    Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepository}:latest
+                    Essential: true
+                    PortMappings:
+                      - ContainerPort: 3000
+                        HostPort: 3000
+                        Protocol: tcp
+                    Environment:
+                      - Name: DB_NAME
+                        Value: codevigil
+                      - Name: PORT
+                        Value: '3000'
+                      - Name: DB_HOST
+                        Value: !GetAtt Database.Endpoint.Address
+                      - Name: DB_PORT
+                        Value: '5432'
+                      - Name: DB_USER
+                        Value: postgres
+                    Secrets:
+                      - Name: GITHUB_TOKEN
+                        ValueFrom: !Ref GitHubTokenSecret
+                      - Name: DB_PASSWORD
+                        ValueFrom: !Ref DatabaseSecret
+                    LogConfiguration:
+                      LogDriver: awslogs
+                      Options:
+                        awslogs-group: !Ref LogGroup
+                        awslogs-region: !Ref AWS::Region
+                        awslogs-stream-prefix: ecs
+
+            # Application Load Balancer
+            ApplicationLoadBalancer:
+              Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+              Properties:
+                Name: codevigil-alb
+                Subnets:
+                  - !Ref PublicSubnet1
+                  - !Ref PublicSubnet2
+                SecurityGroups:
+                  - !Ref LoadBalancerSecurityGroup
+                Scheme: internet-facing
+                LoadBalancerAttributes:
+                  - Key: idle_timeout.timeout_seconds
+                    Value: '60'
+                Tags:
+                  - Key: Name
+                    Value: codevigil-alb
+
+            # ALB Target Group
+            TargetGroup:
+              Type: AWS::ElasticLoadBalancingV2::TargetGroup
+              Properties:
+                Name: codevigil-tg
+                Port: 3000
+                Protocol: HTTP
+                TargetType: ip
+                VpcId: !Ref VPC
+                HealthCheckPath: /api/repositories
+                HealthCheckProtocol: HTTP
+                HealthCheckTimeoutSeconds: 5
+                HealthCheckIntervalSeconds: 30
+                HealthyThresholdCount: 2
+                UnhealthyThresholdCount: 3
+                TargetGroupAttributes:
+                  - Key: deregistration_delay.timeout_seconds
+                    Value: '30'
+                Tags:
+                  - Key: Name
+                    Value: codevigil-tg
+
+            # ALB Listener
+            HttpListener:
+              Type: AWS::ElasticLoadBalancingV2::Listener
+              Properties:
+                LoadBalancerArn: !Ref ApplicationLoadBalancer
+                Port: 80
+                Protocol: HTTP
+                DefaultActions:
+                  - Type: forward
+                    TargetGroupArn: !Ref TargetGroup
+
+            # ECS Service
+            ECSService:
+              Type: AWS::ECS::Service
+              DependsOn: HttpListener
+              Properties:
+                ServiceName: codevigil-service
+                Cluster: !Ref ECSCluster
+                TaskDefinition: !Ref TaskDefinition
+                LaunchType: FARGATE
+                DesiredCount: 1
+                DeploymentConfiguration:
+                  MaximumPercent: 200
+                  MinimumHealthyPercent: 50
+                NetworkConfiguration:
+                  AwsvpcConfiguration:
+                    Subnets:
+                      - !Ref PublicSubnet1
+                      - !Ref PublicSubnet2
+                    SecurityGroups:
+                      - !Ref ApplicationSecurityGroup
+                    AssignPublicIp: ENABLED
+                LoadBalancers:
+                  - ContainerName: codevigil
+                    ContainerPort: 3000
+                    TargetGroupArn: !Ref TargetGroup
+                HealthCheckGracePeriodSeconds: 60
+
+          Outputs:
+            LoadBalancerDNS:
+              Description: DNS name of the application load balancer
+              Value: !GetAtt ApplicationLoadBalancer.DNSName
+              Export:
+                Name: codevigil-alb-dns
+
+            ECSClusterName:
+              Description: ECS Cluster Name
+              Value: !Ref ECSCluster
+              Export:
+                Name: codevigil-cluster-name
+
+            ServiceName:
+              Description: ECS Service Name
+              Value: !Ref ECSService
+              Export:
+                Name: codevigil-service-name
+
+            RepositoryURL:
+              Description: ECR Repository URL
+              Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepository}
+              Export:
+                Name: codevigil-repository-url
+
+            DatabaseEndpoint:
+              Description: RDS Database Endpoint
+              Value: !GetAtt Database.Endpoint.Address
+              Export:
+                Name: codevigil-db-endpoint
+          EOF
+          
+          # Deploy the CloudFormation stack
+          aws cloudformation deploy \
+            --stack-name codevigil \
+            --template-file cloudformation/codevigil-infra.yml \
+            --parameter-overrides \
+              DBPassword=${{ secrets.DB_PASSWORD }} \
+              GitHubToken=${{ secrets.GITHUB_TOKEN }} \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Get stack outputs
+        id: get-outputs
+        run: |
+          REPO_URL=$(aws cloudformation describe-stacks \
+            --stack-name codevigil \
+            --query "Stacks[0].Outputs[?ExportName=='codevigil-repository-url'].OutputValue" \
+            --output text)
+          
+          CLUSTER_NAME=$(aws cloudformation describe-stacks \
+            --stack-name codevigil \
+            --query "Stacks[0].Outputs[?ExportName=='codevigil-cluster-name'].OutputValue" \
+            --output text)
+          
+          SERVICE_NAME=$(aws cloudformation describe-stacks \
+            --stack-name codevigil \
+            --query "Stacks[0].Outputs[?ExportName=='codevigil-service-name'].OutputValue" \
+            --output text)
+          
+          LB_URL=$(aws cloudformation describe-stacks \
+            --stack-name codevigil \
+            --query "Stacks[0].Outputs[?ExportName=='codevigil-alb-dns'].OutputValue" \
+            --output text)
+          
+          echo "ECR Repository URL: $REPO_URL"
+          echo "ECS Cluster: $CLUSTER_NAME"
+          echo "ECS Service: $SERVICE_NAME"
+          echo "Application Load Balancer URL: $LB_URL"
+          
+          echo "ecr_repo_url=${REPO_URL}" >> $GITHUB_OUTPUT
+          echo "cluster_name=${CLUSTER_NAME}" >> $GITHUB_OUTPUT
+          echo "service_name=${SERVICE_NAME}" >> $GITHUB_OUTPUT
+          echo "lb_url=${LB_URL}" >> $GITHUB_OUTPUT
+    
+    outputs:
+      ecr_repo_url: ${{ steps.get-outputs.outputs.ecr_repo_url }}
+      cluster_name: ${{ steps.get-outputs.outputs.cluster_name }}
+      service_name: ${{ steps.get-outputs.outputs.service_name }}
+      lb_url: ${{ steps.get-outputs.outputs.lb_url }}
+
+  build-and-deploy:
+    needs: deploy-infrastructure
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: ${{ needs.deploy-infrastructure.outputs.ecr_repo_url }}:latest,${{ needs.deploy-infrastructure.outputs.ecr_repo_url }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Update ECS service
+        run: |
+          aws ecs update-service \
+            --cluster ${{ needs.deploy-infrastructure.outputs.cluster_name }} \
+            --service ${{ needs.deploy-infrastructure.outputs.service_name }} \
+            --force-new-deployment
+
+      - name: Wait for service to stabilize
+        run: |
+          aws ecs wait services-stable \
+            --cluster ${{ needs.deploy-infrastructure.outputs.cluster_name }} \
+            --services ${{ needs.deploy-infrastructure.outputs.service_name }}
+
+      - name: Verify deployment
+        run: |
+          echo "Application deployed to: http://${{ needs.deploy-infrastructure.outputs.lb_url }}"
+          
+          # Add retries since the service might take a moment to become healthy
+          MAX_RETRIES=5
+          RETRY_COUNT=0
+          SUCCESS=false
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" != "true" ]; do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://${{ needs.deploy-infrastructure.outputs.lb_url }}/api/repositories")
+            
+            if [ "$HTTP_STATUS" == "200" ]; then
+              SUCCESS=true
+              echo "✅ Deployment successful! Application is responding with HTTP 200."
+            else
+              echo "Attempt $((RETRY_COUNT+1))/$MAX_RETRIES: Application not ready yet (HTTP status: $HTTP_STATUS). Waiting 30 seconds..."
+              sleep 30
+              RETRY_COUNT=$((RETRY_COUNT+1))
+            fi
+          done
+          
+          if [ "$SUCCESS" != "true" ]; then
+            echo "❌ Deployment verification failed after $MAX_RETRIES attempts."
+            exit 1
+          fi 

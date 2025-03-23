@@ -264,7 +264,7 @@ jobs:
                       Action: sts:AssumeRole
                 ManagedPolicyArns:
                   - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
-                  - arn:aws:iam::aws:policy/AmazonElasticContainerRegistryReadOnly
+                  - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
                 Policies:
                   - PolicyName: SecretsAccess
                     PolicyDocument:

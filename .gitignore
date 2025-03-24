@@ -1,3 +1,5 @@
 /target
 .lein-env
 .env
+
+.DS_Store

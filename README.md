@@ -4,6 +4,16 @@
 
 A Clojure backend service for GitHub repository pull request analysis.
 
+## Screenshots
+
+Here are some screenshots of the CodeVigil dashboard:
+
+![CodeVigil Dashboard](screenshots/CodeVigil.jpeg)
+
+![CodeVigil Dashboard Detail](screenshots/CodeVigil%20·%2012.03am%20·%2003-24.jpeg)
+
+![CodeVigil Metrics View](screenshots/CodeVigil%20·%2012.04am%20·%2003-24.jpeg)
+
 ## Overview
 
 CodeVigil is a backend service that:

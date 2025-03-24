@@ -104,12 +104,12 @@ Response:
 Retrieve aggregated metrics for a repository over time (weekly or daily).
 
 ```
-GET /api/metrics/{owner}/{repo}?aggregation={weekly|daily}
+GET /api/repositories/{owner}/{repo}/metrics?aggregation={weekly|daily}
 ```
 
 Example:
 ```
-GET /api/metrics/Helicone/helicone?aggregation=weekly
+GET /api/repositories/Helicone/helicone/metrics?aggregation=weekly
 ```
 
 Response:
@@ -193,67 +193,6 @@ Response:
 
 3. The API will be available at http://localhost:3000
    - Swagger UI: http://localhost:3000/swagger-ui
-
-## Database Schema
-
-- **repositories**: Stores repository information
-  - id (PK)
-  - owner
-  - repo_name
-  - repo_url
-  - created_at
-  - last_checked_at
-
-- **pull_requests**: Stores pull request data
-  - id (PK)
-  - repository_id (FK)
-  - github_id
-  - number
-  - state
-  - title
-  - html_url
-  - created_at
-  - updated_at
-  - closed_at
-  - merged_at
-  - user_login
-
-- **reviews**: Stores pull request reviews
-  - id (PK)
-  - pull_request_id (FK)
-  - github_id
-  - user_login
-  - state
-  - submitted_at
-  - commit_id
-
-- **review_comments**: Stores comments on pull request reviews
-  - id (PK)
-  - pull_request_id (FK)
-  - github_id
-  - user_login
-  - created_at
-  - updated_at
-  - commit_id
-  - path
-  - position
-  - body
-
-- **requested_reviewers**: Stores users requested to review a pull request
-  - id (PK)
-  - pull_request_id (FK)
-  - user_login
-
-- **metrics**: Stores calculated metrics for pull requests
-  - id (PK)
-  - repository_id (FK)
-  - pull_request_id (FK)
-  - pr_number
-  - pr_merge_time_seconds
-  - code_review_turnaround_seconds
-  - first_review_requested_at
-  - first_approval_at
-  - calculated_at
 
 ## Testing
 

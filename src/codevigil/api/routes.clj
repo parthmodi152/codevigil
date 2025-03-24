@@ -23,7 +23,11 @@
                                              :repo_url repo_url})]
           
           ;; Queue repository for asynchronous processing with immediate metrics calculation
-          (gh-async/process-repository-async! owner repo repo_url repo-id :calculate-metrics true)
+          (gh-async/process-repository-async! {:owner owner
+                                              :repo repo
+                                              :repo-url repo_url
+                                              :repo-id repo-id
+                                              :calculate-metrics true})
           
           ;; Return immediate success response
           (resp/response {:status "success"
@@ -40,6 +44,53 @@
       (resp/bad-request {:status "error"
                         :message "Invalid repository URL."}))))
 
+(defn- normalize-aggregation
+  "Normalize the aggregation parameter to either 'daily' or 'weekly'"
+  [aggregation]
+  (if (contains? #{"daily" "weekly"} aggregation)
+    aggregation
+    "weekly"))
+
+(defn- fetch-repository
+  "Fetch repository by owner and repo name"
+  [owner repo]
+  (log/info "Attempting to fetch repository from database...")
+  (let [repo-result (db/get-repository-by-owner-repo owner repo)]
+    (log/info "Repository fetch result:" repo-result)
+    repo-result))
+
+(defn- get-metrics-by-aggregation
+  "Get metrics based on the aggregation type"
+  [repo-id aggregation]
+  (log/info "Fetching" aggregation "metrics for repo-id:" repo-id)
+  (case aggregation
+    "daily" (metrics-aggregation/get-daily-metrics repo-id)
+    "weekly" (metrics-aggregation/get-weekly-metrics repo-id)))
+
+(defn- format-metrics-response
+  "Format the successful metrics response"
+  [owner repo aggregation metrics]
+  (log/info "Metrics fetched successfully:" metrics)
+  (resp/response {:status "success"
+                 :repository {:owner owner :repo repo}
+                 :aggregation aggregation
+                 :metrics metrics}))
+
+(defn- handle-metrics-error
+  "Handle and format error responses for metrics retrieval"
+  [e]
+  (log/error "Exception in get-repository-metrics-handler:" (.getMessage e) e)
+  (let [cause (.getCause e)
+        cause-message (when cause (.getMessage cause))
+        error-message (if cause-message
+                       (str (.getMessage e) " - Cause: " cause-message)
+                       (.getMessage e))]
+    (resp/status 
+      (resp/response {:status "error" 
+                     :message error-message
+                     :type (.getSimpleName (class e))}) 
+      500)))
+
 (defn get-repository-metrics-handler
   "Handler for GET /api/repositories/:owner/:repo/metrics endpoint.
    Returns metrics for a repository with daily or weekly aggregation.
@@ -51,57 +102,22 @@
    - For weekly aggregation: metrics for the last 5 weeks
    - For daily aggregation: metrics for the last 5 days"
   [request]
-  (log/info "Request received for get-repository-metrics-handler:" request)
+  (log/info "Request received for get-repository-metrics-handler")
   (let [owner (get-in request [:path-params :owner])
         repo (get-in request [:path-params :repo])
-        aggregation (or (get-in request [:parameters :query :aggregation]) "weekly")
-        
-        ;; Validate aggregation parameter
-        aggregation (if (contains? #{"daily" "weekly"} aggregation)
-                      aggregation
-                      "weekly")]
+        raw-aggregation (or (get-in request [:parameters :query :aggregation]) "weekly")
+        aggregation (normalize-aggregation raw-aggregation)]
     
     (log/info "Processing metrics request with params - owner:" owner "repo:" repo "aggregation:" aggregation)
     
-    (if-let [repository (do
-                          (log/info "Attempting to fetch repository from database...")
-                          (let [repo-result (db/get-repository-by-owner-repo owner repo)]
-                            (log/info "Repository fetch result:" repo-result)
-                            repo-result))]
+    (if-let [repository (fetch-repository owner repo)]
       (try
         (log/info "Repository found. ID:" (:repositories/id repository))
         (let [repo-id (:repositories/id repository)
-              
-              ;; Get aggregated metrics
-              metrics (do
-                        (log/info "Fetching" aggregation "metrics for repo-id:" repo-id)
-                        (case aggregation
-                          "daily" (do
-                                   (log/info "Getting daily metrics")
-                                   (metrics-aggregation/get-daily-metrics repo-id))
-                          "weekly" (do
-                                    (log/info "Getting weekly metrics")
-                                    (metrics-aggregation/get-weekly-metrics repo-id))))]
-          
-          (log/info "Metrics fetched successfully:" metrics)
-          ;; Return metrics
-          (resp/response {:status "success"
-                         :repository {:owner owner :repo repo}
-                         :aggregation aggregation
-                         :metrics metrics}))
-        
+              metrics (get-metrics-by-aggregation repo-id aggregation)]
+          (format-metrics-response owner repo aggregation metrics))
         (catch Exception e
-          (log/error "Exception in get-repository-metrics-handler:" (.getMessage e) e)
-          (println "Error getting repository metrics:" (.getMessage e))
-          (let [cause (.getCause e)
-                cause-message (when cause (.getMessage cause))
-                error-message (if cause-message
-                               (str (.getMessage e) " - Cause: " cause-message)
-                               (.getMessage e))]
-            (resp/status (resp/response {:status "error" 
-                                        :message error-message
-                                        :type (.getSimpleName (class e))}) 
-                        500))))
+          (handle-metrics-error e)))
       
       ;; Repository not found
       (do

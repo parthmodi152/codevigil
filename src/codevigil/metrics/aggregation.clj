@@ -47,37 +47,40 @@
                       (java.sql.Timestamp/from (jt/instant start-date))
                       (java.sql.Timestamp/from (jt/instant end-date))]))
 
-(defn- aggregate-metrics-for-period
-  "Aggregate metrics for a specific time period.
-   Returns a map with median values for PR merge time and code review turnaround time."
-  [repository-id start-date end-date period-name]
-  (let [metrics (get-metrics-in-date-range repository-id start-date end-date)
-        
-        ;; Extract metric values
-        merge-times (remove nil? (map :metrics/pr_merge_time_seconds metrics))
-        review-times (remove nil? (map :metrics/code_review_turnaround_seconds metrics))
-        
-        ;; Calculate medians
+(defn- extract-metric-values
+  "Extract metric values from raw metrics data."
+  [metrics]
+  (let [merge-times (remove nil? (map :metrics/pr_merge_time_seconds metrics))
+        review-times (remove nil? (map :metrics/code_review_turnaround_seconds metrics))]
+    {:merge-times merge-times
+     :review-times review-times
+     :total-prs (count metrics)
+     :merged-prs (count merge-times)
+     :reviewed-prs (count review-times)}))
+
+(defn- ensure-numeric-value
+  "Ensure value is a number or nil."
+  [value]
+  (when value
+    (if (number? value)
+      value
+      (try (double value)
+           (catch Exception _ nil)))))
+
+(defn- calculate-metric-medians
+  "Calculate median values for metrics."
+  [metric-values]
+  (let [{:keys [merge-times review-times]} metric-values
         median-merge-time (median merge-times)
-        median-review-time (median review-times)
-        
-        ;; Count PRs
-        total-prs (count metrics)
-        merged-prs (count merge-times)
-        reviewed-prs (count review-times)
-        
-        ;; Ensure values are numbers or nil
-        median-merge-time-safe (when median-merge-time 
-                                (if (number? median-merge-time) 
-                                  median-merge-time 
-                                  (try (double median-merge-time) 
-                                       (catch Exception _ nil))))
-        median-review-time-safe (when median-review-time 
-                                (if (number? median-review-time) 
-                                  median-review-time
-                                  (try (double median-review-time) 
-                                       (catch Exception _ nil))))]
-    
+        median-review-time (median review-times)]
+    {:median-merge-time-safe (ensure-numeric-value median-merge-time)
+     :median-review-time-safe (ensure-numeric-value median-review-time)}))
+
+(defn- format-period-metrics
+  "Format period metrics for response."
+  [{:keys [period-name start-date end-date metric-values median-values]}]
+  (let [{:keys [total-prs merged-prs reviewed-prs]} metric-values
+        {:keys [median-merge-time-safe median-review-time-safe]} median-values]
     {:period period-name
      :start_date (str start-date)
      :end_date (str end-date)
@@ -89,76 +92,85 @@
      :median_review_turnaround_seconds median-review-time-safe
      :median_review_turnaround (format-duration-seconds median-review-time-safe)}))
 
+(defn- aggregate-metrics-for-period
+  "Aggregate metrics for a specific time period.
+   Returns a map with median values for PR merge time and code review turnaround time."
+  [repository-id start-date end-date period-name]
+  (let [metrics (get-metrics-in-date-range repository-id start-date end-date)
+        metric-values (extract-metric-values metrics)
+        median-values (calculate-metric-medians metric-values)]
+    (format-period-metrics {:period-name period-name
+                           :start-date start-date
+                           :end-date end-date
+                           :metric-values metric-values
+                           :median-values median-values})))
+
+(defn- create-period-name
+  "Create a descriptive name for a time period."
+  [period-type periods-ago]
+  (cond
+    (zero? periods-ago) (if (= period-type :week) "This week" "Today")
+    (= period-type :day) (str periods-ago " day" (when (> periods-ago 1) "s") " ago")
+    :else (str periods-ago " week" (when (> periods-ago 1) "s") " ago")))
+
+(defn- calculate-period-dates
+  "Calculate start and end dates for a period."
+  [period-type periods-ago start-point]
+  (let [period-fn (if (= period-type :day) jt/days jt/weeks)
+        start-date (jt/minus start-point (period-fn periods-ago))
+        end-date (jt/plus start-date (period-fn 1))]
+    [start-date end-date]))
+
+(defn- generate-period-ranges
+  "Generate date ranges for a series of periods (days or weeks).
+   Returns a vector of [start-date end-date period-name] tuples."
+  [period-type num-periods]
+  (let [today (jt/truncate-to (jt/zoned-date-time) :days)
+        start-point (if (= period-type :week)
+                      (jt/adjust today :previous-or-same-day-of-week :monday)
+                      today)]
+    (for [periods-ago (range num-periods)]
+      (let [[start-date end-date] (calculate-period-dates period-type periods-ago start-point)
+            period-name (create-period-name period-type periods-ago)]
+        [start-date end-date period-name]))))
+
+(defn- process-metrics-for-periods
+  "Process metrics for a collection of time periods.
+   Returns a vector of aggregated metrics for each period."
+  [repository-id date-ranges]
+  (mapv (fn [[start-date end-date period-name]]
+          (try
+            (log/debug "Aggregating metrics for period:" period-name)
+            (aggregate-metrics-for-period repository-id start-date end-date period-name)
+            (catch Exception e
+              (log/error "Error aggregating metrics for period" period-name ":" (.getMessage e))
+              {:period period-name
+               :start_date (str start-date)
+               :end_date (str end-date)
+               :error (.getMessage e)})))
+        date-ranges))
+
+(defn- get-period-metrics
+  "Generic function to get metrics for a specific period type."
+  [repository-id period-type num-periods]
+  (try
+    (log/info (str "Starting get-" (name period-type) "-metrics for repository-id:") repository-id)
+    (let [date-ranges (generate-period-ranges period-type num-periods)]
+      (log/info (str "Aggregating metrics for each " (name period-type)))
+      (process-metrics-for-periods repository-id date-ranges))
+    (catch Exception e
+      (log/error (str "Error in get-" (name period-type) "-metrics:") (.getMessage e) e)
+      (throw (IllegalStateException. 
+               (str "Failed to get " (name period-type) " metrics: " (.getMessage e)) e)))))
+
 (defn get-daily-metrics
   "Get daily metrics for the last 5 days.
    Returns a collection of daily metrics, each with median values."
   [repository-id]
-  (try
-    (log/info "Starting get-daily-metrics for repository-id:" repository-id)
-    (let [today (jt/truncate-to (jt/zoned-date-time) :days)
-          _ (log/debug "Current date truncated to days:" today)
-          
-          ;; Generate date ranges for the last 5 days
-          date-ranges (for [days-ago (range 5)]
-                        (let [start-date (jt/minus today (jt/days days-ago))
-                              end-date (jt/plus start-date (jt/days 1))
-                              period-name (if (zero? days-ago)
-                                            "Today"
-                                            (str days-ago " day" (when (> days-ago 1) "s") " ago"))]
-                          [start-date end-date period-name]))
-          _ (log/debug "Date ranges calculated:" date-ranges)]
-      
-      ;; Aggregate metrics for each day
-      (log/info "Aggregating metrics for each day")
-      (mapv (fn [[start-date end-date period-name]]
-              (try
-                (log/debug "Aggregating metrics for period:" period-name)
-                (aggregate-metrics-for-period repository-id start-date end-date period-name)
-                (catch Exception e
-                  (log/error "Error aggregating metrics for period" period-name ":" (.getMessage e))
-                  {:period period-name
-                   :start_date (str start-date)
-                   :end_date (str end-date)
-                   :error (.getMessage e)})))
-            date-ranges))
-    (catch Exception e
-      (log/error "Error in get-daily-metrics:" (.getMessage e) e)
-      (throw (IllegalStateException. (str "Failed to get daily metrics: " (.getMessage e)) e)))))
+  (get-period-metrics repository-id :day 5))
 
 (defn get-weekly-metrics
   "Get weekly metrics for the last 5 weeks.
    Returns a collection of weekly metrics, each with median values."
   [repository-id]
-  (try
-    (log/info "Starting get-weekly-metrics for repository-id:" repository-id)
-    (let [today (jt/truncate-to (jt/zoned-date-time) :days)
-          _ (log/debug "Calculating start of week")
-          start-of-week (jt/adjust today :previous-or-same-day-of-week :monday)
-          _ (log/debug "Start of week calculated as:" start-of-week)
-          
-          ;; Generate date ranges for the last 5 weeks
-          date-ranges (for [weeks-ago (range 5)]
-                        (let [start-date (jt/minus start-of-week (jt/weeks weeks-ago))
-                              end-date (jt/plus start-date (jt/weeks 1))
-                              period-name (if (zero? weeks-ago)
-                                            "This week"
-                                            (str weeks-ago " week" (when (> weeks-ago 1) "s") " ago"))]
-                          [start-date end-date period-name]))
-          _ (log/debug "Date ranges calculated:" date-ranges)]
-      
-      ;; Aggregate metrics for each week
-      (log/info "Aggregating metrics for each week")
-      (mapv (fn [[start-date end-date period-name]]
-              (try
-                (log/debug "Aggregating metrics for period:" period-name)
-                (aggregate-metrics-for-period repository-id start-date end-date period-name)
-                (catch Exception e
-                  (log/error "Error aggregating metrics for period" period-name ":" (.getMessage e))
-                  {:period period-name
-                   :start_date (str start-date)
-                   :end_date (str end-date)
-                   :error (.getMessage e)})))
-            date-ranges))
-    (catch Exception e
-      (log/error "Error in get-weekly-metrics:" (.getMessage e) e)
-      (throw (IllegalStateException. (str "Failed to get weekly metrics: " (.getMessage e)) e)))))
+  (get-period-metrics repository-id :week 5))

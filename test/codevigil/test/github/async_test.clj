@@ -17,7 +17,10 @@
       
       ;; Test that the function returns immediately
       (let [start-time (System/currentTimeMillis)
-            _ (gh-async/process-repository-async! "test-owner" "test-repo" "https://github.com/test-owner/test-repo" 1)
+            _ (gh-async/process-repository-async! {:owner "test-owner"
+                                                   :repo "test-repo"
+                                                   :repo-url "https://github.com/test-owner/test-repo"
+                                                   :repo-id 1})
             end-time (System/currentTimeMillis)
             elapsed (- end-time start-time)]
         

@@ -49,12 +49,13 @@
    Returns immediately without waiting for processing to complete.
    
    Parameters:
-   - owner: Repository owner
-   - repo: Repository name
-   - repo-url: Repository URL
-   - repo-id: Repository ID in the database
-   - calculate-metrics: Whether to calculate metrics immediately after processing"
-  [owner repo repo-url repo-id & {:keys [calculate-metrics] :or {calculate-metrics false}}]
+   - repo-data: Map containing:
+     - :owner - Repository owner
+     - :repo - Repository name
+     - :repo-url - Repository URL
+     - :repo-id - Repository ID in the database
+     - :calculate-metrics (optional) - Whether to calculate metrics immediately after processing"
+  [{:keys [owner repo repo-url repo-id calculate-metrics] :or {calculate-metrics false}}]
   (async/>!! repo-channel {:owner owner
                           :repo repo
                           :repo-url repo-url

@@ -1,8 +1,8 @@
 # CodeVigil
 
-**Frontend Dashboard:** [https://codevigil-dahsboard.vercel.app/](https://codevigil-dahsboard.vercel.app/)
-
 A Clojure backend service for GitHub repository pull request analysis.
+
+**Frontend Dashboard Repository:** [parthmodi152/codevigil-dahsboard](https://github.com/parthmodi152/codevigil-dahsboard)
 
 ## Screenshots
 
